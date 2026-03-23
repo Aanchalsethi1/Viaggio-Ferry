@@ -116,42 +116,25 @@ async function sumChildAllocations(agentId, tripId, companyId, type, cabinId, ex
 }
 
 /**
- * Check if seats allocated to this child agent have been used by active bookings.
- * Returns true if any bookings exist for the allocated cabin/type.
+ * Check if the child agent has assigned these seats to their own selling children.
+ * Returns true if child agent has any active sub-allocations (grandchild allocations).
  *
- * @param {Object} allocation - The AvailabilityAgentAllocation document
+ * @param {Object} allocation - The AvailabilityAgentAllocation document being deleted
  * @param {ObjectId} companyId
  * @param {Session} session - Mongoose transaction session
  */
 async function checkIfSeatsAreUsed(allocation, companyId, session) {
-  const { agent, trip, allocations } = allocation
+  const { agent, trip } = allocation
 
-  // Build list of cabins from the allocation
-  const cabinIds = []
-  for (const alloc of allocations || []) {
-    for (const cabinEntry of alloc.cabins || []) {
-      cabinIds.push(cabinEntry.cabin)
-    }
-  }
-
-  if (cabinIds.length === 0) {
-    return false
-  }
-
-  // Check if any passenger bookings exist for this agent's trip with these cabins
-  // that are NOT cancelled
-  const PassengerBooking = require("../models/PassengerBooking")
-  
-  const bookingCount = await PassengerBooking.countDocuments({
+  // Check if this child agent has allocated seats to their own children (selling children)
+  const childAllocationsCount = await AvailabilityAgentAllocation.countDocuments({
+    parentAgent: agent, // The child agent is now acting as a parent to selling children
+    trip: trip,
     company: companyId,
-    outboundTrip: trip,
-    bookingAgent: agent,
-    cabin: { $in: cabinIds },
-    bookingStatus: { $nin: ["Cancelled"] }, // Active bookings only
     isDeleted: false,
   }).session(session)
 
-  return bookingCount > 0
+  return childAllocationsCount > 0
 }
 
 /**
@@ -862,7 +845,7 @@ const deleteAllocation = async (req, res, next) => {
       session.endSession()
       throw createHttpError(
         400,
-        "Cannot delete this allocation because seats have been used by bookings. Please cancel the bookings first."
+        "Cannot delete this allocation because the child agent has assigned seats to their selling children. Please remove all child allocations first."
       )
     }
 
