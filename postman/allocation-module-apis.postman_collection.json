@@ -1,0 +1,228 @@
+{
+  "info": {
+    "name": "Allocation Module APIs",
+    "_postman_id": "allocation-module-apis-v1",
+    "description": "Hierarchical trip seat allocation system. Company → Marine → Commercial → Selling. Uses credit/debit ledger logic to prevent over-allocation.\n\nRequired environment variables:\n- base_url\n- token\n- tripId\n- allocationId\n- agentId (childAgentId)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:3001", "type": "string" },
+    { "key": "token", "value": "<your-bearer-token>", "type": "string" },
+    { "key": "tripId", "value": "<trip-object-id>", "type": "string" },
+    { "key": "allocationId", "value": "<allocation-object-id>", "type": "string" },
+    { "key": "agentId", "value": "<child-agent-partner-object-id>", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "1. Get My Allocated Trips",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/allocations/my-trips?page=1&limit=10",
+          "host": ["{{base_url}}"],
+          "path": ["api", "allocations", "my-trips"],
+          "query": [
+            { "key": "page", "value": "1" },
+            { "key": "limit", "value": "10" }
+          ]
+        },
+        "description": "Returns all trips that have been allocated to the logged-in agent. Requires agent user token (role: user, any layer). Company admin should use trip availability APIs instead."
+      },
+      "response": [
+        {
+          "name": "200 OK - Trips with allocations",
+          "status": "OK",
+          "code": 200,
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"success\": true,\n  \"count\": 2,\n  \"total\": 2,\n  \"page\": 1,\n  \"limit\": 10,\n  \"pages\": 1,\n  \"data\": [\n    {\n      \"allocationId\": \"64abc...\",\n      \"trip\": {\n        \"_id\": \"64xyz...\",\n        \"tripName\": \"Morning Express\",\n        \"tripCode\": \"ME001\",\n        \"ship\": { \"name\": \"MV Voyager\" },\n        \"departurePort\": { \"name\": \"Port A\", \"code\": \"PA\" },\n        \"arrivalPort\": { \"name\": \"Port B\", \"code\": \"PB\" },\n        \"departureDateTime\": \"2026-04-01T06:00:00.000Z\",\n        \"status\": \"SCHEDULED\"\n      },\n      \"allocatedPassengerSeats\": 50,\n      \"allocatedCargoSeats\": 10,\n      \"allocatedVehicleSeats\": 5,\n      \"allocations\": [\n        {\n          \"type\": \"passenger\",\n          \"cabins\": [{ \"cabin\": \"64cab...\", \"allocatedSeats\": 50 }],\n          \"totalAllocatedSeats\": 50\n        }\n      ],\n      \"createdAt\": \"2026-03-20T10:00:00.000Z\"\n    }\n  ]\n}"
+        }
+      ]
+    },
+    {
+      "name": "2. Get Single Trip Allocation",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/allocations/my-trips/{{tripId}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "allocations", "my-trips", "{{tripId}}"]
+        },
+        "description": "Returns full details for a specific trip allocation: trip info, trip availability (all cabins and seats), agent's own allocation, and child allocations created by this agent."
+      },
+      "response": [
+        {
+          "name": "200 OK - Single trip allocation details",
+          "status": "OK",
+          "code": 200,
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"success\": true,\n  \"data\": {\n    \"trip\": {\n      \"_id\": \"64xyz...\",\n      \"tripName\": \"Morning Express\",\n      \"tripCode\": \"ME001\",\n      \"departureDateTime\": \"2026-04-01T06:00:00.000Z\",\n      \"status\": \"SCHEDULED\"\n    },\n    \"availability\": {\n      \"_id\": \"64avl...\",\n      \"availabilityTypes\": [\n        {\n          \"type\": \"passenger\",\n          \"cabins\": [\n            {\n              \"cabin\": { \"_id\": \"64cab...\", \"name\": \"Economy\", \"type\": \"passenger\" },\n              \"seats\": 200,\n              \"allocatedSeats\": 50\n            }\n          ]\n        }\n      ]\n    },\n    \"myAllocation\": {\n      \"_id\": \"64myalloc...\",\n      \"allocations\": [\n        {\n          \"type\": \"passenger\",\n          \"cabins\": [{ \"cabin\": \"64cab...\", \"allocatedSeats\": 50 }],\n          \"totalAllocatedSeats\": 50\n        }\n      ]\n    },\n    \"childAllocations\": [\n      {\n        \"_id\": \"64child...\",\n        \"agent\": { \"_id\": \"64agent...\", \"name\": \"Child Agent Co\", \"layer\": \"Commercial\" },\n        \"allocations\": [\n          {\n            \"type\": \"passenger\",\n            \"cabins\": [{ \"cabin\": \"64cab...\", \"allocatedSeats\": 20 }],\n            \"totalAllocatedSeats\": 20\n          }\n        ]\n      }\n    ]\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "3. Get Child Allocations",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/allocations/my-child-allocations/{{tripId}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "allocations", "my-child-allocations", "{{tripId}}"]
+        },
+        "description": "Returns all allocations the logged-in agent has created for their child agents on the specified trip."
+      },
+      "response": [
+        {
+          "name": "200 OK - Child allocations list",
+          "status": "OK",
+          "code": 200,
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"success\": true,\n  \"count\": 1,\n  \"data\": [\n    {\n      \"_id\": \"64child...\",\n      \"agent\": { \"_id\": \"64agent...\", \"name\": \"Commercial Agent A\", \"layer\": \"Commercial\" },\n      \"trip\": { \"_id\": \"64xyz...\", \"tripName\": \"Morning Express\", \"tripCode\": \"ME001\", \"departureDateTime\": \"2026-04-01T06:00:00.000Z\" },\n      \"allocations\": [\n        {\n          \"type\": \"passenger\",\n          \"cabins\": [{ \"cabin\": \"64cab...\", \"allocatedSeats\": 20 }],\n          \"totalAllocatedSeats\": 20\n        }\n      ],\n      \"createdAt\": \"2026-03-21T08:00:00.000Z\"\n    }\n  ]\n}"
+        }
+      ]
+    },
+    {
+      "name": "4. Create Child Allocation",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"tripId\": \"{{tripId}}\",\n  \"childAgentId\": \"{{agentId}}\",\n  \"allocations\": [\n    {\n      \"type\": \"passenger\",\n      \"cabins\": [\n        {\n          \"cabin\": \"<cabin-object-id>\",\n          \"allocatedSeats\": 20\n        }\n      ]\n    },\n    {\n      \"type\": \"cargo\",\n      \"cabins\": [\n        {\n          \"cabin\": \"<cargo-cabin-object-id>\",\n          \"allocatedSeats\": 5\n        }\n      ]\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/allocations/child",
+          "host": ["{{base_url}}"],
+          "path": ["api", "allocations", "child"]
+        },
+        "description": "Creates a new seat allocation from the logged-in parent agent to a child agent.\n\nHierarchy rules:\n- Marine agent can allocate to Commercial agents\n- Commercial agent can allocate to Selling agents\n- Selling agents cannot allocate further\n\nValidations:\n- Child must belong to parent's hierarchy (parentAccount = logged-in agent's partner)\n- Cannot exceed parent's remaining seats per cabin\n- No duplicate allocation for same agent+trip (409 if already exists)"
+      },
+      "response": [
+        {
+          "name": "201 Created",
+          "status": "Created",
+          "code": 201,
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"success\": true,\n  \"message\": \"Allocation created successfully\",\n  \"data\": {\n    \"_id\": \"64newalloc...\",\n    \"company\": \"64company...\",\n    \"trip\": \"64xyz...\",\n    \"availability\": \"64avl...\",\n    \"agent\": \"64agent...\",\n    \"parentAgent\": \"64parentagent...\",\n    \"allocations\": [\n      {\n        \"type\": \"passenger\",\n        \"cabins\": [{ \"cabin\": \"64cab...\", \"allocatedSeats\": 20 }],\n        \"totalAllocatedSeats\": 20\n      }\n    ],\n    \"createdAt\": \"2026-03-23T10:00:00.000Z\"\n  }\n}"
+        },
+        {
+          "name": "400 Bad Request - Insufficient seats",
+          "status": "Bad Request",
+          "code": 400,
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"success\": false,\n  \"message\": \"Insufficient remaining seats for cabin 64cab... (type: passenger). Available: 10, Requested: 20\"\n}"
+        },
+        {
+          "name": "409 Conflict - Duplicate allocation",
+          "status": "Conflict",
+          "code": 409,
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"success\": false,\n  \"message\": \"An active allocation already exists for this child agent on this trip. Use the update endpoint instead.\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "5. Update Allocation",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"allocations\": [\n    {\n      \"type\": \"passenger\",\n      \"cabins\": [\n        {\n          \"cabin\": \"<cabin-object-id>\",\n          \"allocatedSeats\": 30\n        }\n      ]\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/allocations/{{allocationId}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "allocations", "{{allocationId}}"]
+        },
+        "description": "Updates seat count for an existing child allocation.\n\nCredit/Debit logic:\n- If new seats > old seats: difference is debited from parent's remaining\n- If new seats < old seats: difference is credited back to parent's remaining\n- TripAvailability.allocatedSeats is adjusted accordingly\n\nOnly the agent who CREATED the allocation (parentAgent) can update it."
+      },
+      "response": [
+        {
+          "name": "200 OK - Updated",
+          "status": "OK",
+          "code": 200,
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"success\": true,\n  \"message\": \"Allocation updated successfully\",\n  \"data\": {\n    \"_id\": \"64alloc...\",\n    \"allocations\": [\n      {\n        \"type\": \"passenger\",\n        \"cabins\": [{ \"cabin\": \"64cab...\", \"allocatedSeats\": 30 }],\n        \"totalAllocatedSeats\": 30\n      }\n    ],\n    \"updatedAt\": \"2026-03-23T11:00:00.000Z\"\n  }\n}"
+        }
+      ]
+    },
+    {
+      "name": "6. Delete Allocation",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/allocations/{{allocationId}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "allocations", "{{allocationId}}"]
+        },
+        "description": "Soft-deletes an allocation (isDeleted = true) and returns all allocated seats back to the parent's pool.\n\nCredit logic:\n- All allocatedSeats from each cabin are returned to TripAvailability.allocatedSeats\n- Parent agent's remaining seats effectively increase\n\nOnly the agent who CREATED the allocation (parentAgent) can delete it."
+      },
+      "response": [
+        {
+          "name": "200 OK - Deleted",
+          "status": "OK",
+          "code": 200,
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"success\": true,\n  \"message\": \"Allocation deleted and seats returned to parent successfully\"\n}"
+        },
+        {
+          "name": "404 Not Found",
+          "status": "Not Found",
+          "code": 404,
+          "header": [{ "key": "Content-Type", "value": "application/json" }],
+          "body": "{\n  \"success\": false,\n  \"message\": \"Allocation not found or you do not have permission to delete it\"\n}"
+        }
+      ]
+    }
+  ]
+}

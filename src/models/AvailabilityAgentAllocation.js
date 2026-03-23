@@ -49,6 +49,13 @@ const agentAllocationSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    // The parent agent who created this allocation (null = allocated by company)
+    parentAgent: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Partner",
+      default: null,
+      index: true,
+    },
     // Allocations by type: passenger, cargo, vehicle
     allocations: [
       {
@@ -108,5 +115,7 @@ const agentAllocationSchema = new mongoose.Schema(
 agentAllocationSchema.index({ company: 1, trip: 1, agent: 1 })
 agentAllocationSchema.index({ company: 1, availability: 1 })
 agentAllocationSchema.index({ company: 1, trip: 1, isDeleted: 1 })
+agentAllocationSchema.index({ parentAgent: 1, trip: 1, isDeleted: 1 })
+agentAllocationSchema.index({ company: 1, agent: 1, isDeleted: 1 })
 
 module.exports = mongoose.model("AvailabilityAgentAllocation", agentAllocationSchema)
