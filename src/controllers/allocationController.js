@@ -352,6 +352,11 @@ const getChildAllocations = async (req, res, next) => {
         path: "trip",
         select: "tripName tripCode departureDateTime",
       })
+      .populate({
+        path: "allocations.cabins.cabin",
+        select: "name type",
+        model: "Cabin",
+      })
       .lean()
 
     res.json({
