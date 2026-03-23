@@ -232,7 +232,13 @@ const getSingleTripAllocation = async (req, res, next) => {
       agent: agentPartner._id,
       company: companyId,
       isDeleted: false,
-    }).lean()
+    })
+      .populate({
+        path: "allocations.cabins.cabin",
+        select: "name type",
+        model: "Cabin",
+      })
+      .lean()
 
     // Fetch child allocations created by this agent for this trip
     const childAllocations = await AvailabilityAgentAllocation.find({
@@ -242,6 +248,11 @@ const getSingleTripAllocation = async (req, res, next) => {
       isDeleted: false,
     })
       .populate("agent", "name layer")
+      .populate({
+        path: "allocations.cabins.cabin",
+        select: "name type",
+        model: "Cabin",
+      })
       .lean()
 
     res.json({
@@ -478,7 +489,7 @@ const createChildAllocation = async (req, res, next) => {
   }
 }
 
-// ─── 5. UPDATE ALLOCATION ─────────────────────────────────────────────────────
+// ─── 5. UPDATE ALLOCATION ─��───────────────────────────────────────────────────
 /**
  * PUT /api/allocations/:allocationId
  * Update seats in an existing child allocation.
