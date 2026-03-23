@@ -85,8 +85,8 @@ async function sumChildAllocations(agentId, tripId, companyId, type, cabinId, ex
   // Always cast to ObjectId so aggregation $match works correctly
   const matchFilter = {
     parentAgent: new mongoose.Types.ObjectId(agentId.toString()),
-    trip:        new mongoose.Types.ObjectId(tripId.toString()),
-    company:     new mongoose.Types.ObjectId(companyId.toString()),
+    trip: new mongoose.Types.ObjectId(tripId.toString()),
+    company: new mongoose.Types.ObjectId(companyId.toString()),
     isDeleted: false,
   }
   if (excludeId) {
@@ -113,105 +113,6 @@ async function sumChildAllocations(agentId, tripId, companyId, type, cabinId, ex
   ])
 
   return results.length > 0 ? results[0].total : 0
-}
-
-/**
- * Check if the child agent has assigned these seats to their own selling children.
- * Returns true if child agent has any active sub-allocations (grandchild allocations).
- *
- * @param {Object} allocation - The AvailabilityAgentAllocation document being deleted
- * @param {ObjectId} companyId
- * @param {Session} session - Mongoose transaction session
- */
-async function checkIfSeatsAreUsed(allocation, companyId, session) {
-  const { agent, trip } = allocation
-
-  // Check if this child agent has allocated seats to their own children (selling children)
-  const childAllocationsCount = await AvailabilityAgentAllocation.countDocuments({
-    parentAgent: agent, // The child agent is now acting as a parent to selling children
-    trip: trip,
-    company: companyId,
-    isDeleted: false,
-  }).session(session)
-
-  return childAllocationsCount > 0
-}
-
-/**
- * Return allocated seats back to parent agent.
- * Updates the parent agent's allocation to add back the seats.
- *
- * @param {Object} allocation - The child allocation being deleted
- * @param {ObjectId} parentAgentId
- * @param {ObjectId} companyId
- * @param {Session} session
- */
-async function returnSeatsToParentAllocation(allocation, parentAgentId, companyId, session) {
-  const { trip, allocations } = allocation
-
-  // Find or create parent allocation for same trip
-  let parentAllocation = await AvailabilityAgentAllocation.findOne({
-    agent: parentAgentId,
-    trip: trip,
-    company: companyId,
-    parentAgent: null, // Parent allocations have null parentAgent
-    isDeleted: false,
-  }).session(session)
-
-  if (!parentAllocation) {
-    // If parent allocation doesn't exist, we cannot return seats
-    // This should not happen in normal flow, but log as warning
-    console.log(
-      `[v0] Warning: Parent allocation not found for trip ${trip} and agent ${parentAgentId}. Seats cannot be returned.`
-    )
-    return
-  }
-
-  // Iterate through child allocations and add seats back to parent
-  for (const childAlloc of allocations || []) {
-    const { type, cabins } = childAlloc
-
-    // Find or create allocation type in parent
-    let parentType = (parentAllocation.allocations || []).find((a) => a.type === type)
-
-    if (!parentType) {
-      // Create new type if it doesn't exist
-      parentType = {
-        type: type,
-        cabins: [],
-        totalAllocatedSeats: 0,
-      }
-      parentAllocation.allocations.push(parentType)
-    }
-
-    // Update cabin seats
-    for (const cabinEntry of cabins || []) {
-      let parentCabin = (parentType.cabins || []).find(
-        (c) => c.cabin.toString() === cabinEntry.cabin.toString()
-      )
-
-      if (!parentCabin) {
-        // Create new cabin entry if it doesn't exist
-        parentCabin = {
-          cabin: cabinEntry.cabin,
-          allocatedSeats: 0,
-        }
-        parentType.cabins.push(parentCabin)
-      }
-
-      // Add seats back to parent
-      parentCabin.allocatedSeats += cabinEntry.allocatedSeats
-    }
-
-    // Update parent type total
-    parentType.totalAllocatedSeats = (parentType.cabins || []).reduce(
-      (sum, c) => sum + (c.allocatedSeats || 0),
-      0
-    )
-  }
-
-  // Save parent allocation
-  await parentAllocation.save({ session })
 }
 
 // ─── 1. GET MY ALLOCATED TRIPS ────────────────────────────────────────────────
@@ -833,22 +734,6 @@ const deleteAllocation = async (req, res, next) => {
       throw createHttpError(404, "Allocation not found or you do not have permission to delete it")
     }
 
-    // Check if this allocation's seats have been used by checking active bookings
-    const hasUsedSeats = await checkIfSeatsAreUsed(
-      allocation,
-      companyId,
-      session
-    )
-
-    if (hasUsedSeats) {
-      await session.abortTransaction()
-      session.endSession()
-      throw createHttpError(
-        400,
-        "Cannot delete this allocation because the child agent has assigned seats to their selling children. Please remove all child allocations first."
-      )
-    }
-
     // Fetch trip availability to return seats
     const tripAvailability = await TripAvailability.findOne({
       trip: allocation.trip,
@@ -873,14 +758,6 @@ const deleteAllocation = async (req, res, next) => {
       }
       await tripAvailability.save({ session })
     }
-
-    // Return seats back to parent agent's allocation
-    await returnSeatsToParentAllocation(
-      allocation,
-      agentPartner._id,
-      companyId,
-      session
-    )
 
     // Soft delete the allocation
     allocation.isDeleted = true
