@@ -146,6 +146,11 @@ const getMyAllocatedTrips = async (req, res, next) => {
         ],
       })
       .populate("availability", "availabilityTypes")
+      .populate({
+        path: "allocations.cabins.cabin",
+        select: "name type",
+        model: "Cabin",
+      })
       .sort({ createdAt: -1 })
       .lean()
 
