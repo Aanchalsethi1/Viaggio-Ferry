@@ -82,22 +82,28 @@ function buildAuditTrail(req) {
  * @param {ObjectId} [excludeId]     - allocationId to exclude (for updates)
  */
 async function sumChildAllocations(agentId, tripId, companyId, type, cabinId, excludeId = null) {
+  // Always cast to ObjectId so aggregation $match works correctly
   const matchFilter = {
-    parentAgent: agentId,
-    trip: tripId,
-    company: companyId,
+    parentAgent: new mongoose.Types.ObjectId(agentId.toString()),
+    trip:        new mongoose.Types.ObjectId(tripId.toString()),
+    company:     new mongoose.Types.ObjectId(companyId.toString()),
     isDeleted: false,
   }
   if (excludeId) {
-    matchFilter._id = { $ne: excludeId }
+    matchFilter._id = { $ne: new mongoose.Types.ObjectId(excludeId.toString()) }
   }
+
+  // cabinId may arrive as a populated object { _id, name, type } or a plain ObjectId/string
+  const cabinObjId = new mongoose.Types.ObjectId(
+    (cabinId && cabinId._id ? cabinId._id : cabinId).toString()
+  )
 
   const results = await AvailabilityAgentAllocation.aggregate([
     { $match: matchFilter },
     { $unwind: "$allocations" },
     { $match: { "allocations.type": type } },
     { $unwind: "$allocations.cabins" },
-    { $match: { "allocations.cabins.cabin": new mongoose.Types.ObjectId(cabinId) } },
+    { $match: { "allocations.cabins.cabin": cabinObjId } },
     {
       $group: {
         _id: null,
@@ -168,7 +174,7 @@ const getMyAllocatedTrips = async (req, res, next) => {
                 alloc.trip?._id || alloc.trip,
                 companyId,
                 a.type,
-                c.cabin?._id || c.cabin
+                c.cabin
               )
               return {
                 ...c,
@@ -287,7 +293,7 @@ const getSingleTripAllocation = async (req, res, next) => {
                 tripId,
                 companyId,
                 alloc.type,
-                cabinEntry.cabin._id || cabinEntry.cabin
+                cabinEntry.cabin
               )
               return {
                 ...cabinEntry,
