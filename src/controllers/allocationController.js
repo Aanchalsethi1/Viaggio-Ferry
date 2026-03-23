@@ -154,13 +154,33 @@ const getMyAllocatedTrips = async (req, res, next) => {
       .sort({ createdAt: -1 })
       .lean()
 
-    // Summarise per allocation
-    const data = allocations.map((alloc) => {
+    // Summarise per allocation + compute remainingSeats
+    const data = await Promise.all(allocations.map(async (alloc) => {
       const summary = { passenger: 0, cargo: 0, vehicle: 0 }
-      ;(alloc.allocations || []).forEach((a) => {
-        const total = (a.cabins || []).reduce((s, c) => s + c.allocatedSeats, 0)
-        summary[a.type] = total
-      })
+      const allocationsWithRemaining = await Promise.all(
+        (alloc.allocations || []).map(async (a) => {
+          let typeTotal = 0
+          const cabinsWithRemaining = await Promise.all(
+            (a.cabins || []).map(async (c) => {
+              typeTotal += c.allocatedSeats
+              const alreadyGiven = await sumChildAllocations(
+                agentPartner._id,
+                alloc.trip?._id || alloc.trip,
+                companyId,
+                a.type,
+                c.cabin?._id || c.cabin
+              )
+              return {
+                ...c,
+                allocatedToChildren: alreadyGiven,
+                remainingSeats: c.allocatedSeats - alreadyGiven,
+              }
+            })
+          )
+          summary[a.type] = typeTotal
+          return { ...a, cabins: cabinsWithRemaining }
+        })
+      )
 
       return {
         allocationId: alloc._id,
@@ -169,11 +189,11 @@ const getMyAllocatedTrips = async (req, res, next) => {
         allocatedPassengerSeats: summary.passenger,
         allocatedCargoSeats: summary.cargo,
         allocatedVehicleSeats: summary.vehicle,
-        allocations: alloc.allocations,
+        allocations: allocationsWithRemaining,
         createdAt: alloc.createdAt,
         updatedAt: alloc.updatedAt,
       }
-    })
+    }))
 
     res.json({
       success: true,
@@ -255,12 +275,39 @@ const getSingleTripAllocation = async (req, res, next) => {
       })
       .lean()
 
+    // Compute remainingSeats per type+cabin for myAllocation
+    let myAllocationWithRemaining = null
+    if (myAllocation) {
+      const allocationsWithRemaining = await Promise.all(
+        (myAllocation.allocations || []).map(async (alloc) => {
+          const cabinsWithRemaining = await Promise.all(
+            (alloc.cabins || []).map(async (cabinEntry) => {
+              const alreadyGiven = await sumChildAllocations(
+                agentPartner._id,
+                tripId,
+                companyId,
+                alloc.type,
+                cabinEntry.cabin._id || cabinEntry.cabin
+              )
+              return {
+                ...cabinEntry,
+                allocatedToChildren: alreadyGiven,
+                remainingSeats: cabinEntry.allocatedSeats - alreadyGiven,
+              }
+            })
+          )
+          return { ...alloc, cabins: cabinsWithRemaining }
+        })
+      )
+      myAllocationWithRemaining = { ...myAllocation, allocations: allocationsWithRemaining }
+    }
+
     res.json({
       success: true,
       data: {
         trip,
         availability: availability || null,
-        myAllocation: myAllocation || null,
+        myAllocation: myAllocationWithRemaining,
         childAllocations,
       },
     })
@@ -423,7 +470,7 @@ const createChildAllocation = async (req, res, next) => {
           throw createHttpError(400, `You have no allocation for cabin ${cabinId} in type ${type}`)
         }
 
-        // Sum existing child allocations for this cabin (excluding this new one)
+        // Sum all existing child allocations for this cabin from this agent
         const alreadyAllocatedToChildren = await sumChildAllocations(
           agentPartner._id,
           tripId,
@@ -432,34 +479,30 @@ const createChildAllocation = async (req, res, next) => {
           cabinId
         )
 
+        // remaining = what this agent was given - what they already gave to children
         const parentRemaining = parentCabin.allocatedSeats - alreadyAllocatedToChildren
 
         if (allocatedSeats > parentRemaining) {
-          throw createHttpError(400, `Insufficient remaining seats for cabin ${cabinId} (type: ${type}). Available: ${parentRemaining}, Requested: ${allocatedSeats}`)
+          throw createHttpError(
+            400,
+            `Insufficient remaining seats for cabin ${cabinId} (type: ${type}). ` +
+            `Your total: ${parentCabin.allocatedSeats}, Already assigned to children: ${alreadyAllocatedToChildren}, ` +
+            `Remaining: ${parentRemaining}, Requested: ${allocatedSeats}`
+          )
         }
 
         processedCabins.push({ cabin: cabinId, allocatedSeats })
         totalAllocatedSeats += allocatedSeats
 
-        // Update TripAvailability.allocatedSeats for this cabin
-        const availType = (tripAvailability.availabilityTypes || []).find((at) => at.type === type)
-        if (availType) {
-          const availCabin = (availType.cabins || []).find(
-            (c) => c.cabin.toString() === cabinId.toString()
-          )
-          if (availCabin) {
-            availCabin.allocatedSeats = (availCabin.allocatedSeats || 0) + allocatedSeats
-          }
-        }
+        // NOTE: Do NOT touch TripAvailability.allocatedSeats here.
+        // TripAvailability.allocatedSeats tracks company→marine allocations only.
+        // Agent-to-agent sub-allocations are tracked via AvailabilityAgentAllocation.parentAgent.
       }
 
       processedAllocations.push({ type, cabins: processedCabins, totalAllocatedSeats })
     }
 
-    // Save updated TripAvailability
-    await tripAvailability.save({ session })
-
-    // Fetch trip availability _id
+    // Create new allocation document (no TripAvailability update needed)
     const availabilityId = tripAvailability._id
 
     // Create new allocation document
@@ -603,22 +646,21 @@ const updateAllocation = async (req, res, next) => {
             allocationId
           )
 
+          // remaining = parent's seats - what already given to OTHER children
           const parentRemaining = parentCabin.allocatedSeats - alreadyAllocatedToOthers
 
           if (newSeats > parentRemaining) {
-            throw createHttpError(400, `Insufficient remaining seats for cabin ${cabinId} (type: ${type}). Available: ${parentRemaining}, Requested: ${newSeats}`)
+            throw createHttpError(
+              400,
+              `Insufficient remaining seats for cabin ${cabinId} (type: ${type}). ` +
+              `Your total: ${parentCabin.allocatedSeats}, Already assigned to others: ${alreadyAllocatedToOthers}, ` +
+              `Remaining: ${parentRemaining}, Requested: ${newSeats}`
+            )
           }
 
-          // Adjust TripAvailability.allocatedSeats
-          const availType = (tripAvailability.availabilityTypes || []).find((at) => at.type === type)
-          if (availType) {
-            const availCabin = (availType.cabins || []).find(
-              (c) => c.cabin.toString() === cabinId.toString()
-            )
-            if (availCabin) {
-              availCabin.allocatedSeats = Math.max(0, (availCabin.allocatedSeats || 0) + seatDiff)
-            }
-          }
+          // NOTE: Do NOT touch TripAvailability.allocatedSeats here.
+          // TripAvailability tracks company→marine only; agent sub-allocations
+          // are tracked via AvailabilityAgentAllocation.parentAgent.
         }
 
         processedCabins.push({ cabin: cabinId, allocatedSeats: newSeats })
@@ -628,10 +670,7 @@ const updateAllocation = async (req, res, next) => {
       processedAllocations.push({ type, cabins: processedCabins, totalAllocatedSeats })
     }
 
-    // Save TripAvailability changes
-    await tripAvailability.save({ session })
-
-    // Update allocation document
+    // Update allocation document (no TripAvailability mutation for agent sub-allocations)
     existingAllocation.allocations = processedAllocations
     existingAllocation.updatedBy = buildAuditTrail(req)
     await existingAllocation.save({ session })
