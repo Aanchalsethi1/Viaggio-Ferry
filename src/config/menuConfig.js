@@ -584,6 +584,11 @@ function buildMenuForContext({ role, accessGroups = [], companyId } = {}) {
       if (module.submodules) {
         const subs = {}
         for (const [subCode, sub] of Object.entries(module.submodules)) {
+          // Skip "allocation" submodule for company role (only show for user role)
+          if (moduleCode === "partners-management" && subCode === "allocation") {
+            continue
+          }
+
           subs[subCode] = {
             ...sub,
             permissions: {
