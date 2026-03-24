@@ -897,6 +897,63 @@ const deleteAllocation = async (req, res, next) => {
   }
 }
 
+/**
+ * Reset all allocations for a company to zero values when cabin capacity changes
+ * Used when updateShip or updateCabin modifies capacity
+ * @param {String} companyId - The company ID
+ * @param {String} tripId - Optional: specific trip to reset; if null, resets all trips
+ * @param {String} cabinId - Optional: specific cabin to reset; if null, resets all cabins
+ */
+async function resetAllocationsForCabinCapacityChange(companyId, tripId = null, cabinId = null) {
+  const session = await mongoose.startSession()
+  session.startTransaction()
+
+  try {
+    const query = {
+      company: companyId,
+      isDeleted: false,
+    }
+
+    if (tripId) {
+      query.trip = tripId
+    }
+
+    const allocations = await AvailabilityAgentAllocation.find(query).session(session)
+
+    for (const allocation of allocations) {
+      if (allocation.allocations && allocation.allocations.length > 0) {
+        allocation.allocations.forEach(allocationGroup => {
+          if (allocationGroup.cabins && allocationGroup.cabins.length > 0) {
+            allocationGroup.cabins.forEach(cabin => {
+              // Only reset if specific cabin ID matches, or reset all if cabinId not specified
+              if (!cabinId || cabin.cabin.toString() === cabinId) {
+                cabin.allocatedSeats = 0
+              }
+            })
+          }
+          // Recalculate total
+          allocationGroup.totalAllocatedSeats = allocationGroup.cabins?.reduce(
+            (sum, c) => sum + (c.allocatedSeats || 0),
+            0
+          ) || 0
+        })
+        
+        allocation.updatedBy = { type: "system", name: "Cascading Reset", reason: "Cabin capacity updated" }
+        await allocation.save({ session })
+      }
+    }
+
+    await session.commitTransaction()
+    console.log(`[v0] RESET ALLOCATIONS: Reset allocations for company ${companyId}${tripId ? `, trip ${tripId}` : ''}${cabinId ? `, cabin ${cabinId}` : ''}`)
+  } catch (error) {
+    await session.abortTransaction()
+    console.error(`[v0] ERROR resetting allocations:`, error.message)
+    throw error
+  } finally {
+    session.endSession()
+  }
+}
+
 module.exports = {
   getMyAllocatedTrips,
   getSingleTripAllocation,
@@ -904,4 +961,5 @@ module.exports = {
   createChildAllocation,
   updateAllocation,
   deleteAllocation,
+  resetAllocationsForCabinCapacityChange,
 }

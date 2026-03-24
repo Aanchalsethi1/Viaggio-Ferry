@@ -1,6 +1,7 @@
 const createHttpError = require("http-errors")
 const mongoose = require("mongoose")
 const { Cabin } = require("../models/Cabin")
+const { resetAllocationsForCabinCapacityChange } = require("./allocationController")
 
 /**
  * Helper function to build actor object based on user role
@@ -250,6 +251,17 @@ const updateCabin = async (req, res, next) => {
     cabin.updatedBy = updatedBy
 
     await cabin.save()
+
+    // If cabin was updated, reset allocations for this cabin to zero for all trips
+    if (name !== undefined || description !== undefined || remarks !== undefined || type !== undefined || status !== undefined) {
+      console.log("[v0] Cabin updated - triggering allocation reset for cabin:", id)
+      try {
+        await resetAllocationsForCabinCapacityChange(companyId, null, id)
+      } catch (resetError) {
+        console.error("[v0] Warning: Failed to reset allocations for cabin:", resetError.message)
+        // Don't fail the cabin update if reset fails, just log it
+      }
+    }
 
     res.status(200).json({
       success: true,
