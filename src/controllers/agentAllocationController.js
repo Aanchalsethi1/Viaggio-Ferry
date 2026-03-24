@@ -1156,19 +1156,34 @@ async function resetChildAllocations(parentAllocationId, companyId, tripId, sess
     
     // Find the parent allocation
     const parentAllocation = await AvailabilityAgentAllocation.findById(parentAllocationId).session(session)
-    if (!parentAllocation) return resetAllocations
+    if (!parentAllocation) {
+      console.log(`[v0] CASCADING RESET: Parent allocation ${parentAllocationId} not found`)
+      return resetAllocations
+    }
     
-    console.log(`[v0] CASCADING RESET: Starting cascade from allocation ${parentAllocationId} for agent ${parentAllocation.agent}`)
+    console.log(`[v0] CASCADING RESET: Starting cascade from allocation ${parentAllocationId}`)
+    console.log(`[v0] CASCADING RESET: Parent allocation agent ID: ${parentAllocation.agent}`)
+    console.log(`[v0] CASCADING RESET: Company ID: ${companyId}, Trip ID: ${tripId}`)
+    console.log(`[v0] CASCADING RESET: Looking for child allocations with parentAgent = ${parentAllocation.agent}`)
+    
+    // Convert agent ID to string for proper comparison
+    const parentAgentId = parentAllocation.agent.toString ? parentAllocation.agent.toString() : parentAllocation.agent
     
     // Find all child allocations where parentAgent = this allocation's agent
     const childAllocations = await AvailabilityAgentAllocation.find({
       company: companyId,
       trip: tripId,
-      parentAgent: parentAllocation.agent,
+      parentAgent: parentAgentId,
       isDeleted: false,
     }).session(session)
     
-    console.log(`[v0] CASCADING RESET: Found ${childAllocations.length} direct children of agent ${parentAllocation.agent}`)
+    console.log(`[v0] CASCADING RESET: Query completed. Found ${childAllocations.length} direct children`)
+    if (childAllocations.length > 0) {
+      console.log(`[v0] CASCADING RESET: Child allocation IDs: ${childAllocations.map(c => c._id).join(', ')}`)
+      childAllocations.forEach(c => {
+        console.log(`[v0] CASCADING RESET: Child - ID: ${c._id}, Agent: ${c.agent}, ParentAgent: ${c.parentAgent}`)
+      })
+    }
     
     for (const childAllocation of childAllocations) {
       console.log(`[v0] CASCADING RESET: Processing child allocation ${childAllocation._id} for agent ${childAllocation.agent}`)
@@ -1842,8 +1857,12 @@ exports.updateAgentAllocation = async (req, res) => {
 
     // CASCADING RESET: Reset ALL descendant allocations when parent is updated
     console.log(`[v0] UPDATE: Initiating cascading reset for allocation ${allocationId}`)
+    console.log(`[v0] UPDATE: Cascading reset called with - allocationId: ${allocationId}, companyId: ${companyId}, tripId: ${tripId}`)
     const resetResults = await resetChildAllocations(allocationId, companyId, tripId, session)
     console.log(`[v0] UPDATE: Cascading reset completed, reset ${resetResults.length} descendant allocations`)
+    if (resetResults.length > 0) {
+      console.log(`[v0] UPDATE: Reset allocation details:`, JSON.stringify(resetResults))
+    }
 
     // Apply new allocations to availability (track seat allocation changes)
     console.log(`[v0] UPDATE: Applying new allocations for agent allocation ${allocationId}`)
