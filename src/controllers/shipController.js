@@ -2,7 +2,6 @@ const createHttpError = require("http-errors")
 const mongoose = require("mongoose")
 const { Ship } = require("../models/Ship")
 const { Cabin } = require("../models/Cabin")
-const { resetAllocationsForCabinCapacityChange } = require("./allocationController")
 
 /**
  * Helper function to build actor object based on user role
@@ -385,22 +384,16 @@ const updateShip = async (req, res, next) => {
       ship.technical = { ...ship.technical, ...technical }
     }
 
-    // Check if capacity is being changed
-    const hasPassengerCapacityChange = passengerCapacity && Array.isArray(passengerCapacity) && passengerCapacity.length > 0
-    const hasCargoCapacityChange = cargoCapacity && Array.isArray(cargoCapacity) && cargoCapacity.length > 0
-    const hasVehicleCapacityChange = vehicleCapacity && Array.isArray(vehicleCapacity) && vehicleCapacity.length > 0
-    const hasCapacityChange = hasPassengerCapacityChange || hasCargoCapacityChange || hasVehicleCapacityChange
-
     // Update capacity arrays with validation
-    if (hasPassengerCapacityChange) {
+    if (passengerCapacity && Array.isArray(passengerCapacity) && passengerCapacity.length > 0) {
       ship.passengerCapacity = await validateAndCleanCapacity(passengerCapacity, "passenger", companyId)
     }
 
-    if (hasCargoCapacityChange) {
+    if (cargoCapacity && Array.isArray(cargoCapacity) && cargoCapacity.length > 0) {
       ship.cargoCapacity = await validateAndCleanCapacity(cargoCapacity, "cargo", companyId)
     }
 
-    if (hasVehicleCapacityChange) {
+    if (vehicleCapacity && Array.isArray(vehicleCapacity) && vehicleCapacity.length > 0) {
       ship.vehicleCapacity = await validateAndCleanCapacity(vehicleCapacity, "vehicle", companyId)
     }
 
@@ -420,17 +413,6 @@ const updateShip = async (req, res, next) => {
     ship.updatedBy = updatedBy
 
     await ship.save()
-
-    // If capacity changed, reset all allocations to zero for this company
-    if (hasCapacityChange) {
-      console.log("[v0] Ship capacity updated - triggering allocation reset for company:", companyId)
-      try {
-        await resetAllocationsForCabinCapacityChange(companyId)
-      } catch (resetError) {
-        console.error("[v0] Warning: Failed to reset allocations:", resetError.message)
-        // Don't fail the ship update if reset fails, just log it
-      }
-    }
 
     res.status(200).json({
       success: true,
