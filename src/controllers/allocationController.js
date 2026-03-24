@@ -115,6 +115,83 @@ async function sumChildAllocations(agentId, tripId, companyId, type, cabinId, ex
   return results.length > 0 ? results[0].total : 0
 }
 
+/**
+ * Cascading Reset Helper Function for Allocation Controller
+ * Recursively finds and resets ALL descendant allocations to zero
+ * @param {string} parentAllocationId - The allocation ID that was updated
+ * @param {string} companyId - Company ID for filtering
+ * @param {string} tripId - Trip ID for filtering
+ * @param {object} session - MongoDB session for transaction support
+ * @returns {Array} - List of reset allocations
+ */
+async function resetChildAllocationsForAllocation(parentAllocationId, companyId, tripId, session) {
+  try {
+    const resetAllocations = []
+
+    // Find the parent allocation
+    const parentAllocation = await AvailabilityAgentAllocation.findById(parentAllocationId).session(session)
+    if (!parentAllocation) {
+      console.log(`[v0] CASCADING RESET: Parent allocation ${parentAllocationId} not found`)
+      return resetAllocations
+    }
+
+    console.log(`[v0] CASCADING RESET: Starting cascade from allocation ${parentAllocationId}`)
+    console.log(`[v0] CASCADING RESET: Parent allocation agent ID: ${parentAllocation.agent}`)
+    console.log(`[v0] CASCADING RESET: Looking for child allocations with parentAgent = ${parentAllocation.agent}`)
+
+    // Convert agent ID to string for proper comparison
+    const parentAgentId = parentAllocation.agent.toString ? parentAllocation.agent.toString() : parentAllocation.agent
+
+    // Find all child allocations where parentAgent = this allocation's agent
+    const childAllocations = await AvailabilityAgentAllocation.find({
+      company: companyId,
+      trip: tripId,
+      parentAgent: parentAgentId,
+      isDeleted: false,
+    }).session(session)
+
+    console.log(`[v0] CASCADING RESET: Query completed. Found ${childAllocations.length} direct children`)
+    if (childAllocations.length > 0) {
+      console.log(`[v0] CASCADING RESET: Child allocation IDs: ${childAllocations.map(c => c._id).join(', ')}`)
+      childAllocations.forEach(c => {
+        console.log(`[v0] CASCADING RESET: Child - ID: ${c._id}, Agent: ${c.agent}, ParentAgent: ${c.parentAgent}`)
+      })
+    }
+
+    for (const childAllocation of childAllocations) {
+      console.log(`[v0] CASCADING RESET: Processing child allocation ${childAllocation._id} for agent ${childAllocation.agent}`)
+
+      // First, recursively reset ALL descendants of this child (grandchildren, great-grandchildren, etc)
+      const descendantResets = await resetChildAllocationsForAllocation(childAllocation._id, companyId, tripId, session)
+      resetAllocations.push(...descendantResets)
+
+      // Now reset this child allocation itself
+      if (childAllocation.allocations && childAllocation.allocations.length > 0) {
+        console.log(`[v0] CASCADING RESET: Resetting ${childAllocation.allocations.length} allocation groups for child ${childAllocation._id}`)
+      }
+
+      // Reset child allocation to empty allocations array
+      childAllocation.allocations = []
+      childAllocation.updatedBy = { type: "system", name: "Cascading Reset", reason: "Parent allocation updated" }
+      await childAllocation.save({ session })
+
+      resetAllocations.push({
+        _id: childAllocation._id,
+        agent: childAllocation.agent,
+        status: "reset_to_zero",
+        reason: "Child of updated allocation"
+      })
+
+      console.log(`[v0] CASCADING RESET: Reset allocation ${childAllocation._id} to zero`)
+    }
+
+    return resetAllocations
+  } catch (error) {
+    console.error("[v0] Error in resetChildAllocationsForAllocation:", error)
+    throw error
+  }
+}
+
 // ─── 1. GET MY ALLOCATED TRIPS ────────────────────────────────────────────────
 /**
  * GET /api/allocations/my-trips
@@ -686,6 +763,12 @@ const updateAllocation = async (req, res, next) => {
     existingAllocation.updatedBy = buildAuditTrail(req)
     await existingAllocation.save({ session })
 
+    // CASCADING RESET: Reset ALL descendant allocations when this allocation is updated
+    console.log(`[v0] UPDATE ALLOCATION: Initiating cascading reset for allocation ${allocationId}`)
+    const tripIdForReset = existingAllocation.trip.toString ? existingAllocation.trip.toString() : existingAllocation.trip
+    const resetResults = await resetChildAllocationsForAllocation(allocationId, companyId, tripIdForReset, session)
+    console.log(`[v0] UPDATE ALLOCATION: Cascading reset completed, reset ${resetResults.length} descendant allocations`)
+
     await session.commitTransaction()
     session.endSession()
 
@@ -693,6 +776,11 @@ const updateAllocation = async (req, res, next) => {
       success: true,
       message: "Allocation updated successfully",
       data: existingAllocation,
+      cascadingReset: {
+        status: resetResults.length > 0 ? "completed" : "none_required",
+        resetCount: resetResults.length,
+        resetAllocations: resetResults,
+      },
     })
   } catch (error) {
     await session.abortTransaction()
