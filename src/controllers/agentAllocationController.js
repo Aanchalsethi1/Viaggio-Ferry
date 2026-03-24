@@ -1200,10 +1200,13 @@ exports.listAgentAllocationsByTrip = async (req, res) => {
     const skip = (parseInt(page) - 1) * parseInt(limit)
     const limitNum = parseInt(limit)
 
+    // Filter to show ONLY marine allocations (parentAgent is null = company allocated to marine agent)
+    // This ensures company layer only sees direct marine agent allocations, not commercial allocations
     const query = {
       company: companyId,
       trip: tripId,
       isDeleted: false,
+      parentAgent: null, // Only marine allocations created directly by company
     }
 
     const [allocations, total] = await Promise.all([
@@ -1220,7 +1223,7 @@ exports.listAgentAllocationsByTrip = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: "Agent allocations fetched successfully",
+      message: "Marine agent allocations fetched successfully",
       data: allocations,
       pagination: {
         page: parseInt(page),
