@@ -636,6 +636,12 @@ const createChildAllocation = async (req, res, next) => {
       savedAllocation = await newAllocation.save({ session })
     }
 
+    // CASCADING RESET: Reset ALL descendant allocations when this allocation is created (especially for first child creation)
+    console.log(`[v0] CREATE CHILD ALLOCATION: Initiating cascading reset for new/updated allocation`)
+    const tripIdForReset = tripId.toString ? tripId.toString() : tripId
+    const resetResults = await resetChildAllocationsForAllocation(savedAllocation._id, companyId, tripIdForReset, session)
+    console.log(`[v0] CREATE CHILD ALLOCATION: Cascading reset completed, reset ${resetResults.length} descendant allocations`)
+
     await session.commitTransaction()
     session.endSession()
 
@@ -643,6 +649,11 @@ const createChildAllocation = async (req, res, next) => {
       success: true,
       message: "Allocation created successfully",
       data: savedAllocation,
+      cascadingReset: {
+        status: resetResults.length > 0 ? "completed" : "none_required",
+        resetCount: resetResults.length,
+        resetAllocations: resetResults,
+      },
     })
   } catch (error) {
     await session.abortTransaction()
