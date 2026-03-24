@@ -168,10 +168,18 @@ async function resetChildAllocationsForAllocation(parentAllocationId, companyId,
       // Now reset this child allocation itself
       if (childAllocation.allocations && childAllocation.allocations.length > 0) {
         console.log(`[v0] CASCADING RESET: Resetting ${childAllocation.allocations.length} allocation groups for child ${childAllocation._id}`)
+        
+        // Reset all allocatedSeats to 0 while keeping the allocation structure
+        childAllocation.allocations.forEach(allocation => {
+          if (allocation.cabins && allocation.cabins.length > 0) {
+            allocation.cabins.forEach(cabin => {
+              cabin.allocatedSeats = 0
+            })
+          }
+          allocation.totalAllocatedSeats = 0
+        })
       }
 
-      // Reset child allocation to empty allocations array (KEEP the record with zero values)
-      childAllocation.allocations = []
       childAllocation.updatedBy = { type: "system", name: "Cascading Reset", reason: "Parent allocation updated" }
       await childAllocation.save({ session })
 
@@ -179,10 +187,10 @@ async function resetChildAllocationsForAllocation(parentAllocationId, companyId,
         _id: childAllocation._id,
         agent: childAllocation.agent,
         status: "reset_to_zero",
-        reason: "Child of updated allocation - reset values to zero while keeping the record"
+        reason: "Child of updated allocation - all allocatedSeats reset to zero"
       })
 
-      console.log(`[v0] CASCADING RESET: Reset allocation ${childAllocation._id} to zero (record preserved)`)
+      console.log(`[v0] CASCADING RESET: Reset allocation ${childAllocation._id} seats to zero (structure preserved)`)
     }
 
     return resetAllocations
@@ -483,7 +491,7 @@ const createChildAllocation = async (req, res, next) => {
     // Verify child belongs to this agent's hierarchy
     await verifyChildHierarchy(agentPartner._id, childAgentId, companyId)
 
-    // Check if allocation already exists with actual seat allocations (not just a zero record)
+    // Check if allocation already exists
     const existingAllocation = await AvailabilityAgentAllocation.findOne({
       trip: tripId,
       agent: childAgentId,
@@ -491,18 +499,21 @@ const createChildAllocation = async (req, res, next) => {
       isDeleted: false,
     }).session(session)
 
-    // Only prevent creation if an allocation exists AND it has actual allocations assigned
-    // Allow creation/update if allocations array is empty (reset record)
-    if (existingAllocation && existingAllocation.allocations && existingAllocation.allocations.length > 0) {
-      console.log(`[v0] CREATE CHILD ALLOCATION: Active allocation found for child agent ${childAgentId}:`, {
-        allocationId: existingAllocation._id,
-        allocationsCount: existingAllocation.allocations.length
-      })
-      throw createHttpError(409, "An active allocation already exists for this child agent on this trip. Use the update endpoint instead.")
-    }
+    // If allocation exists, check if it has active (non-zero) seat allocations
+    if (existingAllocation) {
+      const hasActiveSeatAllocations = existingAllocation.allocations?.some(
+        allocation => allocation.cabins?.some(cabin => cabin.allocatedSeats > 0)
+      )
+      
+      if (hasActiveSeatAllocations) {
+        console.log(`[v0] CREATE CHILD ALLOCATION: Active allocation found for child agent ${childAgentId}:`, {
+          allocationId: existingAllocation._id,
+          allocationsCount: existingAllocation.allocations.length
+        })
+        throw createHttpError(409, "An active allocation already exists for this child agent on this trip. Use the update endpoint instead.")
+      }
 
-    // If allocation exists but has zero allocations, we'll update it instead
-    if (existingAllocation && (!existingAllocation.allocations || existingAllocation.allocations.length === 0)) {
+      // Allocation exists but only with zero seats, we'll update it
       console.log(`[v0] CREATE CHILD ALLOCATION: Found existing allocation with zero values for child agent ${childAgentId}. Updating instead of creating.`)
     }
 
@@ -605,9 +616,9 @@ const createChildAllocation = async (req, res, next) => {
     const availabilityId = tripAvailability._id
 
     let savedAllocation
-    if (existingAllocation && (!existingAllocation.allocations || existingAllocation.allocations.length === 0)) {
-      // Update existing zero-value allocation
-      console.log(`[v0] CREATE CHILD ALLOCATION: Updating existing zero-value allocation ${existingAllocation._id}`)
+    if (existingAllocation) {
+      // Update existing allocation (whether it has zero or non-zero values)
+      console.log(`[v0] CREATE CHILD ALLOCATION: Updating existing allocation ${existingAllocation._id}`)
       existingAllocation.allocations = processedAllocations
       existingAllocation.updatedBy = buildAuditTrail(req)
       savedAllocation = await existingAllocation.save({ session })
@@ -640,7 +651,7 @@ const createChildAllocation = async (req, res, next) => {
   }
 }
 
-// ─── 5. UPDATE ALLOCATION ─��───────────────────────────────────────────────────
+// ─── 5. UPDATE ALLOCATION ─��─────────────────────────���─────────────────────────
 /**
  * PUT /api/allocations/:allocationId
  * Update seats in an existing child allocation.
