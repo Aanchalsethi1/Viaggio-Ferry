@@ -170,19 +170,21 @@ async function resetChildAllocationsForAllocation(parentAllocationId, companyId,
         console.log(`[v0] CASCADING RESET: Resetting ${childAllocation.allocations.length} allocation groups for child ${childAllocation._id}`)
       }
 
-      // Reset child allocation to empty allocations array
+      // SOFT-DELETE the child allocation instead of just clearing allocations
+      // This prevents duplicate allocation errors when recreating allocations
       childAllocation.allocations = []
+      childAllocation.isDeleted = true
       childAllocation.updatedBy = { type: "system", name: "Cascading Reset", reason: "Parent allocation updated" }
       await childAllocation.save({ session })
 
       resetAllocations.push({
         _id: childAllocation._id,
         agent: childAllocation.agent,
-        status: "reset_to_zero",
-        reason: "Child of updated allocation"
+        status: "soft_deleted",
+        reason: "Child of updated allocation - marked for deletion to allow recreation"
       })
 
-      console.log(`[v0] CASCADING RESET: Reset allocation ${childAllocation._id} to zero`)
+      console.log(`[v0] CASCADING RESET: Soft-deleted allocation ${childAllocation._id} to zero`)
     }
 
     return resetAllocations
@@ -192,7 +194,7 @@ async function resetChildAllocationsForAllocation(parentAllocationId, companyId,
   }
 }
 
-// ─── 1. GET MY ALLOCATED TRIPS ────────────────────────────────────────────────
+// ─── 1. GET MY ALLOCATED TRIPS ─────────────────────────��──────────────────────
 /**
  * GET /api/allocations/my-trips
  * Return all trips allocated to the logged-in agent.
@@ -483,7 +485,8 @@ const createChildAllocation = async (req, res, next) => {
     // Verify child belongs to this agent's hierarchy
     await verifyChildHierarchy(agentPartner._id, childAgentId, companyId)
 
-    // Prevent duplicate allocation for same agent + trip
+    // Prevent duplicate allocation for same agent + trip (only for active allocations)
+    // Note: Soft-deleted allocations (isDeleted: true) are not considered "active"
     const existingAllocation = await AvailabilityAgentAllocation.findOne({
       trip: tripId,
       agent: childAgentId,
@@ -492,6 +495,11 @@ const createChildAllocation = async (req, res, next) => {
     }).session(session)
 
     if (existingAllocation) {
+      console.log(`[v0] CREATE CHILD ALLOCATION: Active allocation found for child agent ${childAgentId}:`, {
+        allocationId: existingAllocation._id,
+        allocations: existingAllocation.allocations,
+        allocationsCount: existingAllocation.allocations?.length || 0
+      })
       throw createHttpError(409, "An active allocation already exists for this child agent on this trip. Use the update endpoint instead.")
     }
 
