@@ -170,21 +170,19 @@ async function resetChildAllocationsForAllocation(parentAllocationId, companyId,
         console.log(`[v0] CASCADING RESET: Resetting ${childAllocation.allocations.length} allocation groups for child ${childAllocation._id}`)
       }
 
-      // SOFT-DELETE the child allocation instead of just clearing allocations
-      // This prevents duplicate allocation errors when recreating allocations
+      // Reset child allocation to empty allocations array (KEEP the record with zero values)
       childAllocation.allocations = []
-      childAllocation.isDeleted = true
       childAllocation.updatedBy = { type: "system", name: "Cascading Reset", reason: "Parent allocation updated" }
       await childAllocation.save({ session })
 
       resetAllocations.push({
         _id: childAllocation._id,
         agent: childAllocation.agent,
-        status: "soft_deleted",
-        reason: "Child of updated allocation - marked for deletion to allow recreation"
+        status: "reset_to_zero",
+        reason: "Child of updated allocation - reset values to zero while keeping the record"
       })
 
-      console.log(`[v0] CASCADING RESET: Soft-deleted allocation ${childAllocation._id} to zero`)
+      console.log(`[v0] CASCADING RESET: Reset allocation ${childAllocation._id} to zero (record preserved)`)
     }
 
     return resetAllocations
@@ -485,8 +483,7 @@ const createChildAllocation = async (req, res, next) => {
     // Verify child belongs to this agent's hierarchy
     await verifyChildHierarchy(agentPartner._id, childAgentId, companyId)
 
-    // Prevent duplicate allocation for same agent + trip (only for active allocations)
-    // Note: Soft-deleted allocations (isDeleted: true) are not considered "active"
+    // Check if allocation already exists with actual seat allocations (not just a zero record)
     const existingAllocation = await AvailabilityAgentAllocation.findOne({
       trip: tripId,
       agent: childAgentId,
@@ -494,13 +491,19 @@ const createChildAllocation = async (req, res, next) => {
       isDeleted: false,
     }).session(session)
 
-    if (existingAllocation) {
+    // Only prevent creation if an allocation exists AND it has actual allocations assigned
+    // Allow creation/update if allocations array is empty (reset record)
+    if (existingAllocation && existingAllocation.allocations && existingAllocation.allocations.length > 0) {
       console.log(`[v0] CREATE CHILD ALLOCATION: Active allocation found for child agent ${childAgentId}:`, {
         allocationId: existingAllocation._id,
-        allocations: existingAllocation.allocations,
-        allocationsCount: existingAllocation.allocations?.length || 0
+        allocationsCount: existingAllocation.allocations.length
       })
       throw createHttpError(409, "An active allocation already exists for this child agent on this trip. Use the update endpoint instead.")
+    }
+
+    // If allocation exists but has zero allocations, we'll update it instead
+    if (existingAllocation && (!existingAllocation.allocations || existingAllocation.allocations.length === 0)) {
+      console.log(`[v0] CREATE CHILD ALLOCATION: Found existing allocation with zero values for child agent ${childAgentId}. Updating instead of creating.`)
     }
 
     // Fetch this agent's own allocation for the trip
@@ -598,28 +601,37 @@ const createChildAllocation = async (req, res, next) => {
       processedAllocations.push({ type, cabins: processedCabins, totalAllocatedSeats })
     }
 
-    // Create new allocation document (no TripAvailability update needed)
+    // Create or Update allocation document
     const availabilityId = tripAvailability._id
 
-    // Create new allocation document
-    const newAllocation = new AvailabilityAgentAllocation({
-      company: companyId,
-      trip: tripId,
-      availability: availabilityId,
-      agent: childAgentId,
-      parentAgent: agentPartner._id,
-      allocations: processedAllocations,
-      createdBy: buildAuditTrail(req),
-    })
+    let savedAllocation
+    if (existingAllocation && (!existingAllocation.allocations || existingAllocation.allocations.length === 0)) {
+      // Update existing zero-value allocation
+      console.log(`[v0] CREATE CHILD ALLOCATION: Updating existing zero-value allocation ${existingAllocation._id}`)
+      existingAllocation.allocations = processedAllocations
+      existingAllocation.updatedBy = buildAuditTrail(req)
+      savedAllocation = await existingAllocation.save({ session })
+    } else {
+      // Create new allocation document
+      const newAllocation = new AvailabilityAgentAllocation({
+        company: companyId,
+        trip: tripId,
+        availability: availabilityId,
+        agent: childAgentId,
+        parentAgent: agentPartner._id,
+        allocations: processedAllocations,
+        createdBy: buildAuditTrail(req),
+      })
+      savedAllocation = await newAllocation.save({ session })
+    }
 
-    await newAllocation.save({ session })
     await session.commitTransaction()
     session.endSession()
 
     res.status(201).json({
       success: true,
       message: "Allocation created successfully",
-      data: newAllocation,
+      data: savedAllocation,
     })
   } catch (error) {
     await session.abortTransaction()
