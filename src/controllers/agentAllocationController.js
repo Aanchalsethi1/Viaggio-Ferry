@@ -1143,14 +1143,15 @@ const buildActor = (user) => ({
 
 /**
  * Cascading Reset Helper Function
- * Recursively finds and resets all child and grandchild allocations to zero
+ * Recursively finds and resets only GRANDCHILD allocations to zero
  * @param {string} parentAllocationId - The allocation ID that was updated
  * @param {string} companyId - Company ID for filtering
  * @param {string} tripId - Trip ID for filtering
  * @param {object} session - MongoDB session for transaction support
+ * @param {boolean} skipDirectChildren - If true, only reset grandchildren (not direct children)
  * @returns {Array} - List of reset allocations
  */
-async function resetChildAllocations(parentAllocationId, companyId, tripId, session) {
+async function resetChildAllocations(parentAllocationId, companyId, tripId, session, skipDirectChildren = false) {
   try {
     const resetAllocations = []
     
@@ -1170,54 +1171,58 @@ async function resetChildAllocations(parentAllocationId, companyId, tripId, sess
       isDeleted: false,
     }).session(session)
     
-    console.log(`[v0] CASCADING RESET: Found ${childAllocations.length} child allocations for agent ${parentAllocation.agent}`)
+    console.log(`[v0] CASCADING RESET: Found ${childAllocations.length} child allocations for agent ${parentAllocation.agent}, skipDirectChildren=${skipDirectChildren}`)
     
     for (const childAllocation of childAllocations) {
-      // First, recursively reset grandchild allocations
-      const grandchildResets = await resetChildAllocations(childAllocation._id, companyId, tripId, session)
+      // Recursively reset GRANDCHILD allocations (children of the child)
+      const grandchildResets = await resetChildAllocations(childAllocation._id, companyId, tripId, session, false)
       resetAllocations.push(...grandchildResets)
       
-      // Restore all seats from child allocation back to availability
-      for (const allocationGroup of childAllocation.allocations) {
-        const availTypeIndex = availability.availabilityTypes.findIndex(at => at.type === allocationGroup.type)
-        
-        if (availTypeIndex >= 0) {
-          for (const cabin of allocationGroup.cabins) {
-            const cabinIndex = availability.availabilityTypes[availTypeIndex].cabins.findIndex(c => {
-              const cabinId = c.cabin && c.cabin._id ? c.cabin._id.toString() : (c.cabin ? c.cabin.toString() : null)
-              return cabinId === cabin.cabin.toString()
-            })
-            
-            if (cabinIndex >= 0) {
-              console.log(`[v0] CASCADING RESET: Restoring ${cabin.allocatedSeats} seats for cabin ${cabin.cabin} from child allocation ${childAllocation._id}`)
+      // Only reset direct children if skipDirectChildren is false
+      // When updating a parent allocation, skipDirectChildren=true means we keep child allocations but reset grandchildren
+      if (!skipDirectChildren) {
+        // Restore all seats from child allocation back to availability
+        for (const allocationGroup of childAllocation.allocations) {
+          const availTypeIndex = availability.availabilityTypes.findIndex(at => at.type === allocationGroup.type)
+          
+          if (availTypeIndex >= 0) {
+            for (const cabin of allocationGroup.cabins) {
+              const cabinIndex = availability.availabilityTypes[availTypeIndex].cabins.findIndex(c => {
+                const cabinId = c.cabin && c.cabin._id ? c.cabin._id.toString() : (c.cabin ? c.cabin.toString() : null)
+                return cabinId === cabin.cabin.toString()
+              })
               
-              await TripAvailability.updateOne(
-                { _id: childAllocation.availability },
-                {
-                  $inc: {
-                    [`availabilityTypes.${availTypeIndex}.cabins.${cabinIndex}.allocatedSeats`]: -cabin.allocatedSeats
-                  }
-                },
-                { session }
-              )
+              if (cabinIndex >= 0) {
+                console.log(`[v0] CASCADING RESET: Restoring ${cabin.allocatedSeats} seats for cabin ${cabin.cabin} from child allocation ${childAllocation._id}`)
+                
+                await TripAvailability.updateOne(
+                  { _id: childAllocation.availability },
+                  {
+                    $inc: {
+                      [`availabilityTypes.${availTypeIndex}.cabins.${cabinIndex}.allocatedSeats`]: -cabin.allocatedSeats
+                    }
+                  },
+                  { session }
+                )
+              }
             }
           }
         }
+        
+        // Reset child allocation to empty allocations array
+        childAllocation.allocations = []
+        childAllocation.updatedBy = { type: "system", name: "Cascading Reset" }
+        await childAllocation.save({ session })
+        
+        resetAllocations.push({
+          _id: childAllocation._id,
+          agent: childAllocation.agent,
+          previousAllocations: childAllocation.allocations.length,
+          status: "reset_to_zero"
+        })
+        
+        console.log(`[v0] CASCADING RESET: Reset allocation ${childAllocation._id} to zero`)
       }
-      
-      // Reset child allocation to empty allocations array
-      childAllocation.allocations = []
-      childAllocation.updatedBy = { type: "system", name: "Cascading Reset" }
-      await childAllocation.save({ session })
-      
-      resetAllocations.push({
-        _id: childAllocation._id,
-        agent: childAllocation.agent,
-        previousAllocations: childAllocation.allocations.length,
-        status: "reset_to_zero"
-      })
-      
-      console.log(`[v0] CASCADING RESET: Reset allocation ${childAllocation._id} to zero`)
     }
     
     return resetAllocations
@@ -1833,10 +1838,10 @@ exports.updateAgentAllocation = async (req, res) => {
       allocation.updatedBy = buildActor(user)
       await allocation.save({ session })
 
-    // CASCADING RESET: Reset all child and grandchild allocations when parent is updated
+    // CASCADING RESET: Reset only GRANDCHILD allocations when parent is updated (keep direct children but reset their children)
     console.log(`[v0] UPDATE: Initiating cascading reset for allocation ${allocationId}`)
-    const resetResults = await resetChildAllocations(allocationId, companyId, tripId, session)
-    console.log(`[v0] UPDATE: Cascading reset completed, reset ${resetResults.length} child/grandchild allocations`)
+    const resetResults = await resetChildAllocations(allocationId, companyId, tripId, session, true)
+    console.log(`[v0] UPDATE: Cascading reset completed, reset ${resetResults.length} grandchild allocations`)
 
     // Apply new allocations to availability (track seat allocation changes)
     console.log(`[v0] UPDATE: Applying new allocations for agent allocation ${allocationId}`)
